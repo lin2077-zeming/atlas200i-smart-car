@@ -1,0 +1,1265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>小车远程控制台</title>
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   对话式任务台 · v3（2026-10-28 按用户反馈改版）
+   ── 三条硬规则 ──────────────────────────────────────────────
+   ① 主区只有：状态条 / 对话流 / 输入区。高级设置是**覆盖层**，不占主区。
+   ② 整页只有一个滚动（.stage），右侧面板 sticky 固定。
+   ③ 语义色纪律：黄=未连接或降级，绿=就绪，红=急停/危险。
+      日志**不用**语义色（灰），只有"失败/停止"才给黄。
+   ══════════════════════════════════════════════════════════════════ */
+:root{
+  --ok:#1D9E75;      --ok-bg:#E1F5EE;
+  --primary:#534AB7; --primary-bg:#EEEDFE; --primary-line:#D9D7F5;
+  --warn:#BA7517;    --warn-bg:#FAEEDA;      --warn-line:#EFD9AE;
+  --danger:#E24B4A;  --danger-deep:#A32D2D;  --danger-bg:#FDECEC;
+  --t1:#2C2C2A; --t2:#5F5E5A; --t3:#8B8A84;
+  --line:#E6E6E1; --bg:#FAFAF7; --card:#FFFFFF; --soft:#F4F4F0;
+  --r:12px; --r-sm:8px;
+  --fs:13px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0}
+body{
+  background:var(--bg);color:var(--t1);
+  font:400 var(--fs)/1.6 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  overflow:hidden;                 /* ★ 整页不滚，只有 .stage 滚 */
+}
+button{font:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input{font:inherit}
+[hidden]{display:none !important}
+
+#app{height:100%;display:flex;flex-direction:column;min-height:0}
+
+/* ══ 状态条：压紧，一行放下"连接 · 电量 · 在干嘛 · 就绪" + 急停靠右 ══ */
+.statusbar{
+  flex:none;display:flex;align-items:center;gap:8px;justify-content:space-between;
+  padding:8px 14px;background:var(--card);border-bottom:.5px solid var(--line);
+}
+.sb{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}
+.sb-r{display:flex;align-items:center;gap:8px;flex:none}
+.chip{
+  display:inline-flex;align-items:center;gap:5px;background:var(--soft);
+  border-radius:100px;padding:4px 10px;font-size:12px;color:var(--t2);white-space:nowrap;
+}
+.chip b{color:var(--t1);font-weight:500}
+.chip.ok{background:var(--ok-bg)}      .chip.ok b{color:var(--ok)}
+.chip.warn{background:var(--warn-bg)}  .chip.warn b{color:var(--warn)}
+.chip.info{background:var(--primary-bg)} .chip.info b{color:var(--primary)}
+.chip.act{background:var(--primary-bg)}  .chip.act b{color:var(--primary)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--t3);flex:none}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--danger)}
+.bars{display:inline-flex;gap:2px;align-items:center}
+.bars i{width:5px;height:10px;border-radius:2px;background:#E2E2DC;display:block}
+.bars i.on{background:var(--ok)}
+.bars i.on.warn{background:var(--warn)}
+.bars i.on.bad{background:var(--danger)}
+
+.icon{width:32px;height:32px;border-radius:var(--r-sm);font-size:15px;color:var(--t2)}
+.icon:hover{background:var(--soft)}
+
+/* 急停：全站唯一的红，永远在右上 */
+.estop{
+  flex:none;min-height:34px;padding:0 18px;border-radius:var(--r-sm);
+  background:var(--danger);color:#fff;font-weight:700;letter-spacing:.14em;font-size:13px;
+}
+.estop:active{background:var(--danger-deep)}
+.estop:disabled{background:#D8D8D2;color:#9A9A94;letter-spacing:.04em;cursor:not-allowed}
+
+/* ══ 锁定横幅 ══ */
+.lockbar{
+  flex:none;display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:var(--danger-bg);border-bottom:.5px solid #F3C9C8;color:var(--danger-deep);
+  padding:7px 14px;font-size:13px;
+}
+.lockbar button{background:var(--danger);color:#fff;border-radius:var(--r-sm);padding:5px 14px;font-weight:600}
+.lockbar button:disabled{background:#D8D8D2;color:#9A9A94}
+body.locked .stage,body.locked .composer{filter:saturate(.2) opacity(.75)}
+
+/* ══ 提示条：只放"降级/异常"，未连接的引导在对话区里 ══ */
+.warnbar{flex:none;display:flex;flex-direction:column;gap:5px;padding:8px 14px 0}
+.warn{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  background:var(--warn-bg);border:.5px solid var(--warn-line);color:#7A4E0A;
+  border-radius:var(--r-sm);padding:6px 12px;font-size:12px;
+}
+.warn.info{background:var(--primary-bg);border-color:var(--primary-line);color:var(--primary)}
+.warn button{flex:none;background:var(--warn);color:#fff;border-radius:100px;padding:3px 12px;font-size:12px;font-weight:600}
+.warn.info button{background:var(--primary)}
+
+/* ══ 舞台：★唯一滚动容器★；右侧面板 sticky ══ */
+.stage{
+  flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  display:grid;grid-template-columns:minmax(0,1fr) 244px;gap:12px;
+  align-items:start;padding:12px 14px 14px;
+}
+.chat{display:flex;flex-direction:column;gap:12px;min-height:100%}
+.side{position:sticky;top:0;display:flex;flex-direction:column;gap:12px}
+
+/* ══ 空状态引导卡（未连接时替代一条黄条）══ */
+.guide{
+  margin:auto;max-width:440px;background:var(--card);border:.5px solid var(--line);
+  border-radius:var(--r);padding:22px 24px;
+}
+.guide h3{margin:0 0 4px;font-size:15px;font-weight:600}
+.guide p{margin:0 0 14px;color:var(--t3);font-size:12px}
+.guide ol{margin:0 0 16px;padding-left:18px;color:var(--t2)}
+.guide li{margin:6px 0;line-height:1.7}
+.guide li b{color:var(--t1)}
+.guide .btn{
+  background:var(--primary);color:#fff;border-radius:var(--r-sm);
+  padding:9px 18px;font-size:13px;font-weight:600;
+}
+.guide .hint{margin:12px 0 0;color:var(--t3);font-size:11px}
+
+/* ══ 对话卡片：左右分栏（左 72px 时间+徽标 / 右内容）══ */
+.card{
+  display:grid;grid-template-columns:72px minmax(0,1fr);gap:14px;
+  background:var(--card);border:.5px solid var(--line);border-radius:var(--r);
+  padding:14px;
+}
+.card-rail{display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.ts{font-size:12px;color:var(--t3);font-variant-numeric:tabular-nums}
+.badge{
+  font-size:11px;line-height:1.5;padding:1px 8px;border-radius:100px;
+  background:var(--soft);color:var(--t2);white-space:nowrap;
+}
+.badge.act{background:var(--primary-bg);color:var(--primary)}
+.badge.plan{background:var(--primary-bg);color:var(--primary)}
+.badge.danger{background:var(--danger-bg);color:var(--danger-deep)}
+.badge.ghost{background:transparent;border:.5px solid var(--line);color:var(--t3)}
+.card-body{display:flex;flex-direction:column;gap:6px;min-width:0}
+.seg{display:grid;grid-template-columns:38px minmax(0,1fr);gap:10px;align-items:start}
+.seg .k{font-size:13px;color:var(--t3);line-height:1.6}
+.seg .v{
+  margin:0;font-size:14px;color:var(--t1);line-height:1.6;
+  text-align:left;letter-spacing:normal;word-break:break-word;
+}
+.seg .v.q{color:var(--t2)}
+.seg .v.no{color:var(--t2)}
+.seg .v .rej{color:var(--danger-deep)}
+.seg .v .stepmark{color:var(--primary);font-weight:500}
+.seg .v button{
+  margin-left:8px;font-size:11px;color:var(--primary);
+  border:.5px solid var(--primary);border-radius:100px;padding:0 8px;
+}
+
+/* ══ 侧栏 ══ */
+.block{background:var(--card);border:.5px solid var(--line);border-radius:var(--r);padding:12px}
+.block h4{margin:0 0 10px;font-size:12px;font-weight:500;color:var(--t2)}
+.pad{display:grid;grid-template-columns:repeat(3,44px);gap:6px;justify-content:center}
+.dbtn{
+  width:44px;height:44px;border:.5px solid var(--line);border-radius:var(--r-sm);
+  background:#FCFCFA;color:var(--t1);font-size:17px;font-weight:500;
+  display:flex;align-items:center;justify-content:center;touch-action:none;
+}
+.dbtn:active,.dbtn.hot{background:var(--primary);border-color:var(--primary);color:#fff}
+.dbtn.stop{font-size:13px;color:var(--t2)}
+.dbtn.stop:active{background:var(--t1);border-color:var(--t1);color:#fff}
+.seg-speed{display:flex;gap:5px}
+.seg-speed button{
+  flex:1;padding:8px 0;border:.5px solid var(--line);border-radius:var(--r-sm);
+  background:#FCFCFA;font-size:12px;color:var(--t2);
+}
+.seg-speed button.on{background:var(--primary-bg);border-color:var(--primary);color:var(--primary);font-weight:600}
+.presets{display:flex;flex-direction:column;gap:6px}
+.presets button{
+  text-align:left;padding:9px 11px;border:.5px solid var(--line);
+  border-radius:var(--r-sm);background:#FCFCFA;font-size:12px;color:var(--t1);
+}
+.presets button:active{background:var(--primary-bg);border-color:var(--primary);color:var(--primary)}
+.presets small{display:block;color:var(--t3);font-size:11px;line-height:1.4}
+
+/* ══ 输入区：一行主操作 + 一条细状态行 ══ */
+.composer{
+  flex:none;background:var(--card);border-top:.5px solid var(--line);
+  padding:10px 14px calc(10px + env(safe-area-inset-bottom));
+  display:flex;flex-direction:column;gap:6px;
+}
+.row-main{display:flex;gap:8px;align-items:center}
+.btn-mic{
+  flex:none;min-height:40px;padding:0 16px;border-radius:100px;
+  background:var(--primary);color:#fff;font-weight:600;font-size:13px;
+  display:inline-flex;align-items:center;gap:7px;touch-action:none;
+}
+.btn-mic .rdot{width:8px;height:8px;border-radius:50%;background:#fff;opacity:.9}
+.btn-mic.rec .rdot{animation:blink .9s infinite}
+@keyframes blink{50%{opacity:.2}}
+#text{
+  flex:1;min-width:0;min-height:40px;border:.5px solid var(--line);
+  border-radius:100px;padding:0 16px;background:#FCFCFA;color:var(--t1);
+}
+#text:focus{outline:none;border-color:var(--primary)}
+.btn-send{
+  flex:none;min-height:40px;padding:0 20px;border-radius:var(--r-sm);
+  background:var(--primary);color:#fff;font-weight:600;
+}
+/* 细状态行：识别 + 电平 + 开关（不再挂一堆控件） */
+.row-status{
+  display:flex;align-items:center;gap:12px;font-size:11px;color:var(--t3);
+  min-height:18px;flex-wrap:wrap;
+}
+.row-status b{color:var(--t2);font-weight:500}
+#lvwrap{display:inline-flex;align-items:center;gap:6px}
+#lvbar{
+  display:inline-block;width:54px;height:4px;border-radius:2px;background:#EDEDE8;
+  position:relative;overflow:hidden;
+}
+#lvbar i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--primary);border-radius:2px;transition:width .08s linear}
+.switch{display:inline-flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+.switch input{position:absolute;opacity:0;width:0;height:0}
+.switch .track{
+  width:30px;height:17px;border-radius:100px;background:#DDDDD6;position:relative;
+  transition:background .15s;flex:none;
+}
+.switch .track::after{
+  content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;
+  background:#fff;transition:transform .15s;
+}
+.switch input:checked + .track{background:var(--primary)}
+.switch input:checked + .track::after{transform:translateX(13px)}
+.kbd-hint{margin-left:auto;color:var(--t3)}
+
+/* ══ 高级设置：覆盖层（遮罩 + 右侧抽屉）══ */
+.mask{
+  position:fixed;inset:0;z-index:80;background:rgba(24,24,22,.30);
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+}
+.sheet{
+  position:fixed;z-index:81;top:0;right:0;bottom:0;width:min(430px,94vw);
+  background:var(--card);border-left:.5px solid var(--line);
+  display:flex;flex-direction:column;box-shadow:-8px 0 28px rgba(0,0,0,.08);
+}
+.sheet-h{
+  flex:none;display:flex;align-items:center;justify-content:space-between;
+  padding:14px 16px;border-bottom:.5px solid var(--line);
+}
+.sheet-h b{font-size:14px}
+.sheet-h button{
+  background:var(--primary);color:#fff;border-radius:var(--r-sm);
+  padding:6px 16px;font-size:13px;font-weight:600;
+}
+.sheet-body{flex:1 1 auto;overflow-y:auto;padding:12px 16px 18px;display:flex;flex-direction:column;gap:10px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;color:var(--t2)}
+.row .sub{font-size:11px;color:var(--t3);margin-left:4px}
+/* ══ 高级设置：输入麦克风下拉（阵列麦 / 无线麦）══ */
+.mic-pick{display:flex;gap:6px;align-items:center;flex:none}
+.mic-pick select{max-width:200px;font-size:12px;padding:4px 6px;
+  border:.5px solid var(--line);border-radius:var(--r-sm);
+  background:#FCFCFA;color:var(--t2)}
+.mic-pick .tog{min-width:0;padding:5px 10px}
+.tog{
+  flex:none;border:.5px solid var(--line);background:#FCFCFA;color:var(--t2);
+  border-radius:100px;padding:5px 14px;font-size:12px;min-width:72px;
+}
+.tog.on{background:var(--ok-bg);border-color:var(--ok);color:var(--ok);font-weight:600}
+.tog:disabled{color:var(--t3)}
+.sheet-sep{height:.5px;background:var(--line);margin:4px 0}
+/* ══ 远程电源（高级功能，危险操作）：确认弹窗 ══ */
+.pwr-mini{display:flex;gap:6px;flex:none}
+.pwr-mini .tog{padding:5px 10px;min-width:0}
+.pwr-mini .tog.danger{color:var(--danger);border-color:#F0B7B6}
+.pwr-mask{position:fixed;inset:0;z-index:88;background:rgba(24,24,22,.42);
+  -webkit-backdrop-filter:blur(3px);backdrop-filter:blur(3px)}
+.pwr-card{position:fixed;z-index:89;left:50%;top:50%;transform:translate(-50%,-50%);
+  width:min(88vw,360px);background:var(--card);border:.5px solid var(--line);
+  border-radius:var(--r);padding:18px;box-shadow:0 16px 48px rgba(0,0,0,.22)}
+.pwr-card h3{margin:0 0 8px;font-size:15px}
+.pwr-card p{margin:0 0 14px;font-size:12.5px;line-height:1.7;color:var(--t2)}
+.pwr-btns{display:flex;gap:10px}
+.pwr-btns button{flex:1;padding:9px;border-radius:var(--r-sm);
+  border:.5px solid var(--line);background:var(--soft);font-weight:600}
+.pwr-btns .danger{background:var(--danger);border-color:var(--danger);color:#fff}
+.log-h{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--t2)}
+.log-h button{font-size:11px;color:var(--primary)}
+/* 日志：灰色为主，**不用语义色**；只有 失败/停止 才黄 */
+#log{
+  background:#FAFAF7;border:.5px solid var(--line);border-radius:var(--r-sm);
+  padding:8px 10px;height:190px;overflow:auto;
+  font:11px/1.75 ui-monospace,Consolas,monospace;color:var(--t3);
+}
+.lg{display:flex;gap:6px;align-items:baseline;white-space:pre-wrap;word-break:break-word}
+.lg .x{flex:none;font-size:11px;color:var(--t3);opacity:.8}
+.lg.warn{color:var(--warn)}
+
+/* ══ toast ══ */
+#toast{
+  position:fixed;left:50%;bottom:96px;transform:translateX(-50%);
+  background:#2C2C2A;color:#fff;border-radius:100px;padding:8px 18px;
+  font-size:12px;opacity:0;transition:opacity .18s;pointer-events:none;
+  max-width:88vw;text-align:center;z-index:90;
+}
+#toast.on{opacity:.95}
+
+/* ══ 答辩演示模式：整体放大（投屏用）══ */
+body.big{--fs:15px}
+body.big .chip{font-size:14px;padding:5px 12px}
+body.big .estop{font-size:15px;min-height:40px;padding:0 24px}
+body.big .ts{font-size:13px}
+body.big .seg .k{font-size:14px}
+body.big .seg .v{font-size:17px}
+body.big .badge{font-size:12px}
+body.big .dbtn{width:52px;height:52px;font-size:20px}
+body.big .pad{grid-template-columns:repeat(3,52px)}
+body.big .presets button{font-size:14px;padding:11px 12px}
+body.big .seg-speed button{font-size:14px;padding:10px 0}
+body.big .btn-mic,body.big .btn-send{min-height:46px;font-size:15px}
+body.big #text{min-height:46px;font-size:15px}
+body.big .guide h3{font-size:18px}
+body.big .guide li{font-size:14px}
+
+/* ══ 响应式 ══ */
+@media (max-width:1023px){
+  .stage{grid-template-columns:minmax(0,1fr) 196px;gap:10px}
+  .presets small{display:none}
+}
+@media (max-width:719px){
+  .stage{grid-template-columns:1fr;gap:10px}
+  .side{position:static;flex-direction:row;overflow-x:auto;padding-bottom:2px}
+  .side .block{flex:none;min-width:160px}
+  .pad{grid-template-columns:repeat(3,44px)}
+  .kbd-hint{display:none}
+  .sheet{width:100%;top:auto;height:78vh;border-left:none;border-top:.5px solid var(--line);border-radius:14px 14px 0 0}
+  .card{grid-template-columns:60px minmax(0,1fr);gap:10px;padding:12px}
+  .row-main{flex-wrap:wrap}
+  #text{order:3;flex:1 1 100%;min-height:44px}
+  .btn-mic,.btn-send{min-height:44px}
+}
+@media (max-width:420px){
+  .pad{grid-template-columns:repeat(3,40px)}
+  .dbtn{width:40px;height:40px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- ① 状态条：连接 · 电量 · 在干嘛 · 就绪 + 齿轮 + 急停(右上) -->
+  <header class="statusbar" id="statusbar">
+    <div class="sb">
+      <span class="chip" id="chip-conn"><i class="dot" id="d-conn"></i><b id="c-conn">连接中</b></span>
+      <span class="chip" id="chip-batt">
+        <span class="bars" id="batt-bars"><i></i><i></i><i></i><i></i></span><b id="batt-pct">—</b>
+      </span>
+      <span class="chip act" id="chip-act"><b id="c-act">待机</b></span>
+      <span class="chip" id="chip-ready"><b id="c-ready">语音·AI —</b></span>
+      <span class="chip" id="chip-plan" hidden><b id="c-plan">1/2</b></span>
+    </div>
+    <div class="sb-r">
+      <button class="icon" id="btn-adv" title="高级设置">⚙</button>
+      <button class="estop" id="estop" title="急停（键盘空格）">急 停</button>
+    </div>
+  </header>
+
+  <!-- ② 锁定横幅 -->
+  <div class="lockbar" id="lockbar" hidden>
+    <span>已急停 · 车不会再动，<b>需人工解除</b>才能继续</span>
+    <button id="btn-release">解除锁定</button>
+  </div>
+
+  <!-- ③ 提示条（只放降级/异常；未连接的引导在对话区） -->
+  <div class="warnbar" id="warnbar" hidden></div>
+
+  <!-- ④ 舞台：★唯一滚动容器★ -->
+  <main class="stage" id="stage">
+    <section class="chat" id="chat">
+      <!-- 空状态引导卡（未连接时显示） -->
+      <div class="guide" id="guide">
+        <h3>还差三步就能开动</h3>
+        <p>现在还没找到小车，插好线会自动连上，不用刷新页面。</p>
+        <ol>
+          <li><b>接串口</b> 小车的 USB 线插到板子的 USB 口</li>
+          <li><b>上电</b> 先开小车电池，再确认板子已启动</li>
+          <li><b>等它自己连</b> 3 秒内状态条会变成「已连接」</li>
+        </ol>
+        <button class="btn" id="btn-retry">重新检测</button>
+        <p class="hint">等不及了？先在「⚙ 高级」里打开「离线演示」，页面照样能点。</p>
+      </div>
+    </section>
+
+    <aside class="side">
+      <div class="block">
+        <h4>手动控制</h4>
+        <div class="pad">
+          <span></span>
+          <button class="dbtn" id="fw" data-a="forward" title="前进（W / ↑）">↑</button>
+          <span></span>
+          <button class="dbtn" id="tl" data-a="turn_left" title="左转（A / ←）">←</button>
+          <button class="dbtn stop" id="stp" data-a="stop" title="停止">停</button>
+          <button class="dbtn" id="tr" data-a="turn_right" title="右转（D / →）">→</button>
+          <span></span>
+          <button class="dbtn" id="bk" data-a="backward" title="后退（S / ↓）">↓</button>
+          <span></span>
+        </div>
+      </div>
+
+      <div class="block">
+        <h4>速度</h4>
+        <div class="seg-speed" id="seg-speed">
+          <button data-lv="0">慢</button>
+          <button data-lv="1">中</button>
+          <button data-lv="2">快</button>
+        </div>
+      </div>
+
+      <div class="block">
+        <h4>常用任务</h4>
+        <div class="presets">
+          <button data-t="前进一米">前进 1 米</button>
+          <button data-t="左转三百六十度">原地转一圈<small>原地转 · 约 8 秒</small></button>
+          <button data-t="前进一米，然后左转九十度，再前进一米">演示路线<small>前进 → 左转 → 前进</small></button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ⑤ 输入区：一行主操作 + 一条细状态行 -->
+  <footer class="composer">
+    <div class="row-main">
+      <button class="btn-mic" id="btn-ptt" title="按住说话（F2）">
+        <span class="rdot"></span><span id="ptt-label">按住说话</span>
+      </button>
+      <input id="text" placeholder="也可以直接打字，例如「往前开一点」" autocomplete="off">
+      <button class="btn-send" id="send">发送</button>
+    </div>
+    <div class="row-status">
+      <span>识别 <b id="asr-text">—</b></span>
+      <span id="lvwrap" hidden><span id="lvbar"><i></i></span></span>
+      <label class="switch">
+        <input type="checkbox" id="chk-autoexec" checked>
+        <span class="track"></span>识别后自动执行
+      </label>
+      <span class="kbd-hint">空格急停 · F2 说话</span>
+    </div>
+  </footer>
+</div>
+
+<!-- ⑥ 高级设置：覆盖层 -->
+<div class="mask" id="adv-mask" hidden></div>
+<aside class="sheet" id="advanced" hidden>
+  <div class="sheet-h">
+    <b>高级设置</b>
+    <button id="adv-close">完成</button>
+  </div>
+  <div class="sheet-body">
+    <div class="row">
+      <span>🆘 语音急停<span class="sub" id="kws-note"></span></span>
+      <button class="tog" id="btn-kws">开启</button>
+    </div>
+    <div class="row">
+      <span>🗣️ 语音唤醒「小车车」</span>
+      <button class="tog" id="btn-wake">开启</button>
+    </div>
+    <div class="row">
+      <span>🎤 语音识别模型<span class="sub" id="asr-state">未加载</span></span>
+      <button class="tog" id="btn-asr-load">加载</button>
+    </div>
+    <div class="row">
+      <span>🎙️ 输入麦克风<span class="sub" id="mic-note">语音输入用（按住说话/自动聆听）</span></span>
+      <span class="mic-pick">
+        <select id="sel-mic" aria-label="输入麦克风"></select>
+        <button class="tog" id="btn-mic-refresh">刷新</button>
+      </span>
+    </div>
+    <div class="row">
+      <span>👂 自动聆听<span class="sub">说一句识别一句；与语音急停共用麦克风</span></span>
+      <button class="tog" id="btn-listen">开启</button>
+    </div>
+    <div class="row">
+      <span>🔊 浏览器当车的喇叭</span>
+      <button class="tog" id="btn-sound">开启</button>
+    </div>
+    <div class="row">
+      <span>🧪 离线演示<span class="sub">不发串口，页面上照常走流程</span></span>
+      <button class="tog" id="btn-demo">开启</button>
+    </div>
+    <div class="row">
+      <span>📺 答辩演示模式<span class="sub">字号加大，投屏用</span></span>
+      <button class="tog" id="btn-big">开启</button>
+    </div>
+    <div class="row" id="power-row" hidden>
+      <span>🔌 开发板电源<span class="sub">重启/关机后会断连，需重新上电或等它启动</span></span>
+      <span class="pwr-mini">
+        <button class="tog danger" id="btn-reboot">重启</button>
+        <button class="tog danger" id="btn-shutdown">关机</button>
+      </span>
+    </div>
+    <div class="sheet-sep"></div>
+    <div class="log-h">
+      <span>日志</span>
+      <button id="btn-log-clear">清空</button>
+    </div>
+    <div id="log" aria-live="polite"></div>
+  </div>
+</aside>
+
+<!-- ⑦ 远程电源：危险操作的二次确认（只在高级里触发，不占主界面） -->
+<div class="pwr-mask" id="power-mask" hidden></div>
+<div class="pwr-card" id="power-modal" hidden role="alertdialog" aria-modal="true">
+  <h3 id="power-title">重启开发板？</h3>
+  <p id="power-tip">重启前会先让小车停车，然后控制台断开；板子大约 30~60 秒后自己起来。</p>
+  <div class="pwr-btns">
+    <button id="power-cancel">取消</button>
+    <button id="power-confirm" class="danger">确认重启</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const hhmm = ts => {
+  const d = new Date((ts || Date.now()/1000) * 1000);
+  return String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+};
+
+function toast(msg){
+  const t = $("toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(t._t); t._t = setTimeout(()=>t.classList.remove("on"), 2000);
+}
+async function api(path, body){
+  const o = { method: body===undefined ? "GET" : "POST",
+              headers: {"Content-Type":"application/json"} };
+  if (body !== undefined) o.body = JSON.stringify(body);
+  const r = await fetch(path, o);
+  if (!r.ok) throw new Error(r.status);
+  return await r.json();
+}
+function esc(s){
+  return String(s == null ? "" : s)
+    .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+/* ══ 电量：4S 电池曲线（前端估算）══════════════════════════════ */
+function battPct(v){
+  if (!v || v <= 0) return null;
+  const pts = [[16.2,100],[14.8,70],[13.5,45],[12.0,20],[10.5,5]];
+  if (v >= pts[0][0]) return 100;
+  for (let i = 0; i < pts.length - 1; i++){
+    const a = pts[i], b = pts[i+1];
+    if (v <= a[0] && v >= b[0]){
+      const r = (v - b[0]) / (a[0] - b[0]);
+      return Math.round(b[1] + (a[1] - b[1]) * r);
+    }
+  }
+  return 5;
+}
+/* 速度档位，单位是「毫米/秒」（2026-10-28 落地实测修正：命令值不是自定义单位，
+   协议里就是毫米/秒。遥控器"丝滑"手感实测约 210~250 毫米/秒 → 「中」取 300 稍快些） */
+const SPEED = [{k:"慢", v:200}, {k:"中", v:300}, {k:"快", v:450}];
+
+/* ══ 对话卡片：左栏 72px（时间+徽标）/ 右栏内容 ═══════════════ */
+const cards = {};
+function ensureCard(turn, ts){
+  if (cards[turn]) return cards[turn];
+  const el = document.createElement("article");
+  el.className = "card";
+  el.innerHTML =
+    '<div class="card-rail"><span class="ts"></span><span class="badge"></span></div>' +
+    '<div class="card-body"></div>';
+  const guide = $("guide");
+  if (guide) guide.hidden = true;
+  $("chat").appendChild(el);
+  const c = { el, body: el.querySelector(".card-body"),
+              ts: el.querySelector(".ts"), badge: el.querySelector(".badge") };
+  c.ts.textContent = hhmm(ts);
+  cards[turn] = c;
+  return c;
+}
+function setBadge(c, text, cls){
+  c.badge.textContent = text;
+  c.badge.className = "badge" + (cls ? " " + cls : "");
+}
+function addRow(c, k, html, cls){
+  const row = document.createElement("div");
+  row.className = "seg";
+  row.innerHTML = '<span class="k">' + k + '</span><p class="v' +
+                  (cls ? " " + cls : "") + '">' + html + "</p>";
+  c.body.appendChild(row);
+  const st = $("stage"); st.scrollTop = st.scrollHeight;
+  return row.querySelector(".v");
+}
+function demoBadge(c){
+  if (c.el.querySelector(".badge.ghost")) return;
+  const b = document.createElement("span");
+  b.className = "badge ghost";
+  b.textContent = "离线演示";
+  c.el.querySelector(".card-rail").appendChild(b);
+}
+
+let evN = 0;
+function handleEvent(e){
+  const c = ensureCard(e.turn, e.ts);
+  switch (e.type){
+    case "heard":
+      addRow(c, "听到", "“" + esc(e.text || "（空）") + "”", "q");
+      if (e.src === "voice") setBadge(c, "语音", "");
+      break;
+    case "reply":
+      setBadge(c, e.pending ? "待确认" : "闲聊", "");
+      addRow(c, "回应", esc(e.text || ""));
+      if (e.pending){
+        const v = addRow(c, "操作", "");
+        const b = document.createElement("button");
+        b.textContent = "执行";
+        b.onclick = () => execPending(e.text);
+        v.appendChild(b);
+      }
+      break;
+    case "exec":
+      if (!c.badge.textContent) setBadge(c, "动作", "act");
+      if (e.demo) demoBadge(c);
+      addRow(c, "执行", esc(e.label || "已执行"));
+      break;
+    case "reject":
+      // 面向用户：这是"没执行"，不是"错误"（词太重）
+      setBadge(c, "没执行", "");
+      if (e.demo) demoBadge(c);
+      addRow(c, "执行", '<span class="rej">' + esc(e.reason || "被拒绝") + "</span>", "no");
+      break;
+    case "step": {
+      setBadge(c, "多步 " + e.step + "/" + e.total, "plan");
+      if (e.demo) demoBadge(c);
+      const html = '<span class="stepmark">第 ' + e.step + "/" + e.total +
+                   " 步</span> · " + esc(e.label || "");
+      const prev = c.el.querySelector(".card-body .stepmark");
+      if (prev) prev.parentNode.innerHTML = html;
+      else addRow(c, "执行", html);
+      break;
+    }
+    case "plan_done":
+      addRow(c, "执行", "全部步骤已完成");
+      break;
+    case "estop":
+      setBadge(c, "急停", "danger");
+      addRow(c, "安全", '<span class="rej">已急停并锁定（需人工解除）</span>');
+      break;
+    case "release":
+      addRow(c, "安全", "已解除锁定");
+      break;
+  }
+}
+async function execPending(text){
+  try{ await api("/api/voice/exec", { text }); toast("已执行"); }
+  catch(e){ toast("执行失败"); }
+}
+async function pollEvents(){
+  try{
+    const r = await api("/api/events?since=" + evN);
+    if (r.events && r.events.length){
+      evN = r.since;
+      r.events.forEach(handleEvent);
+    }
+  }catch(e){}
+  setTimeout(pollEvents, 700);
+}
+
+/* ══ 状态轮询（同时充当看门狗心跳）═════════════════════════════ */
+let lastStatus = null, soundOn = false, pttOn = false, bigMode = false;
+
+function actionText(s){
+  if (s.plan_running && s.plan_total) return "第 " + s.plan_step + "/" + s.plan_total + " 步";
+  const a = s.action || "";
+  if (!a || a === "stop") return "待机";
+  return s.action_label || a;
+}
+
+async function tick(){
+  try{
+    const s = await api("/api/status");
+    lastStatus = s;
+
+    /* 连接 */
+    $("c-conn").textContent = s.connected ? "已连接" : "未连接";
+    $("d-conn").className = "dot " + (s.connected ? "ok" : "bad");
+    $("chip-conn").className = "chip " + (s.connected ? "ok" : "warn");
+
+    /* 电量 */
+    const pct = battPct(s.voltage);
+    const bars = $("batt-bars").children;
+    const onN = pct == null ? 0 : Math.max(1, Math.ceil(pct / 25));
+    const bcls = pct == null ? "" : (pct <= 20 ? "bad" : (pct <= 45 ? "warn" : ""));
+    for (let i = 0; i < bars.length; i++) bars[i].className = (i < onN ? ("on " + bcls) : "");
+    $("batt-pct").textContent = pct == null ? "—" : (pct + "%");
+    $("batt-bars").style.opacity = pct == null ? "0.35" : "1";
+    /* 黄只给"未连接或降级" → 电量低属于降级可以黄 */
+    $("chip-batt").className = "chip" + (bcls === "bad" ? " warn" : "");
+
+    /* 车在干嘛 */
+    $("c-act").textContent = actionText(s);
+
+    /* 语音 · AI 合成一个胶囊（绿=都就绪，黄=其一不可用） */
+    const asrOk = s.asr_state === "ready";
+    const aiOk = s.llm_state === "ready";
+    let ready = "语音·AI 就绪";
+    if (!asrOk && !aiOk) ready = "语音未启用 · AI 不可用";
+    else if (!asrOk) ready = "语音未启用 · AI 就绪";
+    else if (!aiOk) ready = "语音就绪 · AI 不可用";
+    if (s.listening) ready = "聆听中 · " + (aiOk ? "AI 就绪" : "AI 不可用");
+    $("c-ready").textContent = ready;
+    $("chip-ready").className = "chip " + ((asrOk && aiOk) ? "ok" : "warn");
+    $("asr-state").textContent = asrOk ? "已就绪"
+      : (s.asr_state === "loading" ? "加载中…（10~30 秒）" : "未加载");
+    const bAsr = $("btn-asr-load");
+    if (bAsr){
+      bAsr.disabled = asrOk || s.asr_state === "loading";
+      bAsr.textContent = asrOk ? "已就绪" : (s.asr_state === "loading" ? "加载中…" : "加载");
+    }
+
+    /* 语音急停的真实状态：麦克风被自动聆听占着时是"让位"，不是"关闭" */
+    const kn = $("kws-note");
+    if (kn){
+      kn.textContent = s.mic_owner
+        ? "· 已让位（" + s.mic_owner + "用麦克风）"
+        : (s.kws_state === "ready" ? "· 监听中"
+           : (s.kws_state === "loading" ? "· 加载中" : ""));
+      kn.style.color = s.mic_owner ? "var(--warn)" : "var(--t3)";
+    }
+
+    /* 计划进度胶囊 */
+    const showPlan = !!(s.plan_running && s.plan_total);
+    $("chip-plan").hidden = !showPlan;
+    if (showPlan) $("c-plan").textContent = "第 " + s.plan_step + "/" + s.plan_total + " 步";
+
+    /* 急停锁定 */
+    const locked = !!s.estop_locked;
+    $("estop").disabled = locked;
+    $("estop").textContent = locked ? "已急停" : "急 停";
+    $("lockbar").hidden = !locked;
+    document.body.classList.toggle("locked", locked);
+
+    /* 空状态引导：只在"未连接且还没有任何卡片"时显示 */
+    const hasCards = Object.keys(cards).length > 0;
+    $("guide").hidden = !!(s.connected || hasCards);
+    if ($("guide").hidden === false) $("guide").dataset.state = "off";
+
+    /* 速度档位（就近匹配 + 悬停显示估算速度） */
+    const cur = s.speed || 30;
+    let best = 1, bestd = 1e9;
+    SPEED.forEach((lv, i) => { const d = Math.abs(lv.v - cur); if (d < bestd){ bestd = d; best = i; } });
+    const mps = Math.round((s.speed_mmps || 0) / 100) / 10;
+    Array.from($("seg-speed").children).forEach((b, i) => {
+      b.classList.toggle("on", i === best);
+      b.title = "约 " + mps + " 米/秒（估算）";
+    });
+
+    /* 语音输入状态：录音/聆听都体现在**麦克风按钮本身**上，不另占一行 */
+    if (s.listening){
+      $("ptt-label").textContent = "正在听…";
+      $("btn-ptt").classList.add("rec");
+      $("btn-listen").classList.add("on");
+      $("btn-listen").textContent = "已开启";
+    } else if (pttOn){
+      $("ptt-label").textContent = "录音中 · 松开结束";
+      $("btn-ptt").classList.add("rec");
+      $("btn-listen").classList.remove("on");
+      $("btn-listen").textContent = "开启";
+    } else {
+      $("ptt-label").textContent = (s.asr_state === "loading") ? "语音加载中…" : "按住说话";
+      $("btn-ptt").classList.remove("rec");
+      $("btn-listen").classList.remove("on");
+      $("btn-listen").textContent = "开启";
+    }
+    $("chk-autoexec").checked = !!s.auto_exec;
+    if (s.asr_seq !== (window._asrSeq || 0)){
+      window._asrSeq = s.asr_seq;
+      $("asr-text").textContent = s.asr_text || "—";
+    }
+    const lv = Math.max(0, Math.min(1, s.asr_level || 0));
+    const showLv = !!(s.recording || s.listening);
+    $("lvwrap").hidden = !showLv;
+    if (showLv) $("lvbar").firstElementChild.style.width = Math.round(lv * 100) + "%";
+
+    $("btn-demo").classList.toggle("on", !!s.demo_mode);
+    $("btn-demo").textContent = s.demo_mode ? "已开启" : "开启";
+
+    /* 远程电源：只有板子装了提权助手才显示（默认隐藏，安全优先） */
+    $("power-row").hidden = !s.power;
+
+    renderWarns(s);
+  }catch(e){}
+  setTimeout(tick, 1000);
+}
+
+/* ══ 提示条：只放"降级/异常"（未连接的引导在对话区）═════════════ */
+let warnHtml = "";
+function renderWarns(s){
+  const out = [];
+  if (s.tts_state === "failed"){
+    out.push({cls:"", html:"🔈 我说不出话了（语音合成不可用），动作照常执行", btn:null});
+  }
+  if (s.llm_state && s.llm_state !== "ready" && s.llm_state !== "off"){
+    out.push({cls:"", html:"🤔 现在只能听懂固定说法（语言模型不可用）", btn:null});
+  }
+  if (s.speaker && !soundOn){
+    out.push({cls:"info", html:"🔊 想在本页听车的播报？开启后声音会出现在浏览器里", btn:"开声音"});
+  }
+  const html = out.map(w =>
+    '<div class="warn ' + w.cls + '"><span>' + w.html + '</span>' +
+    (w.btn ? '<button onclick="enableSound()">' + w.btn + '</button>' : '') + '</div>'
+  ).join("");
+  if (html !== warnHtml){
+    warnHtml = html;
+    $("warnbar").innerHTML = html;
+    $("warnbar").hidden = out.length === 0;
+  }
+}
+async function enableSound(){
+  if (soundOn) return;
+  soundOn = true;
+  $("btn-sound").classList.add("on");
+  $("btn-sound").textContent = "已开启";
+  toast("声音已开：车的播报会在本页播放");
+  await ttsStart();
+}
+
+/* ══ 高级设置：覆盖层开关 ══════════════════════════════════════ */
+function openAdv(on){
+  $("advanced").hidden = !on;
+  $("adv-mask").hidden = !on;
+  document.body.classList.toggle("sheet-open", on);
+  if (on) loadMics();              /* 打开高级时才枚举麦克风（按需，不占轮询） */
+}
+$("btn-adv").addEventListener("click", ()=>openAdv(true));
+$("adv-close").addEventListener("click", ()=>openAdv(false));
+$("adv-mask").addEventListener("click", ()=>openAdv(false));
+
+/* ══ 方向键：按住走、松开停 ═══════════════════════════════════ */
+function press(a){
+  api("/api/heartbeat", {}).catch(()=>{});
+  api("/api/action", {action:a}).then(r=>{
+    if (r && r.ok === false) toast(r.msg || "已拒绝");
+  }).catch(()=>toast("发送失败"));
+}
+function release(){ api("/api/stop", {}).catch(()=>{}); }
+document.querySelectorAll(".dbtn").forEach(b=>{
+  const a = b.dataset.a;
+  if (a === "stop"){
+    b.addEventListener("click", ()=>{ api("/api/stop", {}).catch(()=>{}); toast("已停止"); });
+    return;
+  }
+  b.addEventListener("pointerdown", ev=>{
+    ev.preventDefault(); b.classList.add("hot");
+    try{ b.setPointerCapture(ev.pointerId); }catch(e){}
+    press(a);
+  });
+  const up = ()=>{ b.classList.remove("hot"); release(); };
+  b.addEventListener("pointerup", up);
+  b.addEventListener("pointercancel", up);
+  b.addEventListener("lostpointercapture", up);
+});
+
+/* ══ 速度三段式 ════════════════════════════════════════════════ */
+Array.from($("seg-speed").children).forEach((b, i) => {
+  b.addEventListener("click", async ()=>{
+    try{ await api("/api/speed", {value: SPEED[i].v}); toast("速度：" + SPEED[i].k); }
+    catch(e){ toast("设置失败"); }
+  });
+});
+
+/* ══ 常用任务 ══════════════════════════════════════════════════ */
+document.querySelectorAll(".presets button").forEach(b=>{
+  b.addEventListener("click", ()=>sendText(b.dataset.t));
+});
+
+/* ══ 文本指令 ══════════════════════════════════════════════════ */
+async function sendText(t){
+  const text = (t !== undefined ? t : $("text").value).trim();
+  if (!text) return;
+  if (t === undefined) $("text").value = "";
+  try{
+    const r = await api("/api/text", {text});
+    if (r.queued && lastStatus && lastStatus.connected === false){
+      toast("已发送（小车没连上，动作会被忽略）");
+    } else {
+      toast(r.queued ? "已发送" : (r.msg || "已发送"));
+    }
+  }catch(e){ toast("发送失败"); }
+}
+$("send").addEventListener("click", ()=>sendText());
+$("text").addEventListener("keydown", e=>{
+  if (e.key === "Enter"){ e.preventDefault(); sendText(); }
+});
+$("btn-retry").addEventListener("click", ()=>{
+  toast("正在重新检测小车…");
+  tick();
+});
+
+/* ══ 急停 / 解除（急停不排队，按下即发）═══════════════════════ */
+async function doEstop(){
+  release();
+  try{ await api("/api/estop", {}); toast("已急停并锁定"); }
+  catch(e){ toast("急停失败！请断开电源"); }
+}
+$("estop").addEventListener("click", doEstop);
+$("btn-release").addEventListener("click", async ()=>{
+  const b = $("btn-release");
+  if (!confirm("确认解除急停锁定？解除后小车会重新接受指令。")) return;
+  b.disabled = true; b.textContent = "解除中…";
+  try{ await api("/api/estop/release", {}); toast("已解除锁定"); }
+  catch(e){ toast("解除失败"); }
+  finally{ b.disabled = false; b.textContent = "解除锁定"; }
+});
+
+/* ══ 语音输入（按住说话；录音状态就在这个按钮上）═══════════════ */
+async function pttStart(){
+  if (pttOn) return;
+  if (lastStatus && lastStatus.asr_state !== "ready"){
+    toast("正在加载语音识别（首次约 10~30 秒）…");
+    try{ await api("/api/voice/load", {}); }catch(e){}
+  }
+  try{
+    const r = await api("/api/voice/ptt/start", {});
+    if (r.ok){
+      pttOn = true;
+      $("btn-ptt").classList.add("rec");
+      $("ptt-label").textContent = "录音中 · 松开结束";
+    } else { toast(r.msg || "录音启动失败"); }
+  }catch(e){ toast("语音请求失败"); }
+}
+async function pttStop(){
+  if (!pttOn) return;
+  pttOn = false;
+  $("btn-ptt").classList.remove("rec");
+  $("ptt-label").textContent = "识别中…";
+  try{
+    const r = await api("/api/voice/ptt/stop", {});
+    toast(r.ok ? ("识别：" + (r.text || "空")) : (r.msg || "识别失败"));
+  }catch(e){ toast("识别请求失败"); }
+  $("ptt-label").textContent = "按住说话";
+}
+$("btn-ptt").addEventListener("pointerdown", ev=>{
+  ev.preventDefault();
+  try{ $("btn-ptt").setPointerCapture(ev.pointerId); }catch(e){}
+  pttStart();
+});
+$("btn-ptt").addEventListener("pointerup", pttStop);
+$("btn-ptt").addEventListener("pointercancel", pttStop);
+$("btn-ptt").addEventListener("lostpointercapture", pttStop);
+$("chk-autoexec").addEventListener("change", async ()=>{
+  try{ await api("/api/voice/autoexec", {on: $("chk-autoexec").checked}); }
+  catch(e){ toast("设置失败"); }
+});
+/* 自动聆听（开关在高级设置里；状态体现在麦克风按钮上） */
+$("btn-listen").addEventListener("click", async ()=>{
+  const on = !$("btn-listen").classList.contains("on");
+  try{
+    /* 首次用语音时模型是懒加载的 → 先等它加载完，否则第一次点只会得到
+       "正在加载，请稍候再试"，还得再点一次。 */
+    if (on && lastStatus && lastStatus.asr_state !== "ready"){
+      toast("正在加载语音识别（首次约 10~30 秒）…");
+      try{ await api("/api/voice/load", {}); }catch(e){}
+    }
+    const r = await api("/api/voice/listen", {on});
+    toast(r.msg || (on ? "已开始聆听" : "已停止"));
+  }catch(e){ toast("操作失败"); }
+});
+$("btn-asr-load").addEventListener("click", async ()=>{
+  const b = $("btn-asr-load");
+  if (b.disabled) return;
+  b.disabled = true; b.textContent = "加载中…";
+  toast("正在加载语音识别（约 10~30 秒）…");
+  try{
+    const r = await api("/api/voice/load", {});
+    toast(r.msg || (r.ready ? "语音识别已就绪" : "加载失败"));
+  }catch(e){ toast("加载失败"); }
+  finally{ b.disabled = false; b.textContent = "加载"; }
+});
+
+/* ══ 高级开关 ══════════════════════════════════════════════════ */
+async function toggle(path, on, btn, onText, offText){
+  try{
+    const r = await api(path, {on});
+    btn.classList.toggle("on", on);
+    btn.textContent = on ? onText : offText;
+    if (r && r.msg) toast(r.msg);
+  }catch(e){ toast("操作失败"); }
+}
+/* 浏览器当喇叭的点击处理在下方「浏览器当喇叭」区（和播放逻辑放一起） */
+$("btn-kws").addEventListener("click", ()=>
+  toggle("/api/voice/estop", !$("btn-kws").classList.contains("on"),
+         $("btn-kws"), "已开启", "开启"));
+$("btn-wake").addEventListener("click", ()=>
+  toggle("/api/voice/wake", !$("btn-wake").classList.contains("on"),
+         $("btn-wake"), "已开启", "开启"));
+$("btn-demo").addEventListener("click", ()=>
+  toggle("/api/demo", !$("btn-demo").classList.contains("on"),
+         $("btn-demo"), "已开启", "开启"));
+
+/* 答辩演示模式（本地记住） */
+function applyBig(on){
+  bigMode = !!on;
+  document.body.classList.toggle("big", bigMode);
+  $("btn-big").classList.toggle("on", bigMode);
+  $("btn-big").textContent = bigMode ? "已开启" : "开启";
+  try{ localStorage.setItem("car_big", bigMode ? "1" : "0"); }catch(e){}
+}
+$("btn-big").addEventListener("click", ()=>applyBig(!bigMode));
+try{ if (localStorage.getItem("car_big") === "1") applyBig(true); }catch(e){}
+
+/* ══ 输入麦克风（阵列麦 / 无线麦）══════════════════════════════
+   只影响「语音输入」：按住说话 / 自动聆听。
+   ⚠️ 语音急停（KWS）用的是服务启动时选中的麦克风 —— 要一起换，
+      改完偏好后重启服务即可（见文档《远程Web控制台》§十一）。
+*/
+async function loadMics(){
+  const sel = $("sel-mic"), note = $("mic-note");
+  try{
+    const r = await api("/api/mic");
+    if (!r || r.ok === false || !r.devices || !r.devices.length){
+      sel.innerHTML = '<option value="">没有可用麦克风</option>';
+      sel.disabled = true;
+      note.textContent = (r && r.msg) ? r.msg : "没检测到录音设备";
+      return;
+    }
+    sel.disabled = false;
+    const opts = r.devices.map(d=>{
+      const meta = (d.channels || "?") + "ch/" +
+                   (d.samplerate ? (d.samplerate/1000).toFixed(1) + "k" : "?");
+      /* 优先用可读名：阵列麦/无线麦提示 > /proc/asound 的厂商型号 > 原始名 */
+      const who = d.hint ? (d.hint + (d.hw ? " · " + d.hw : ""))
+                : d.card ? (d.card + (d.hw ? " · " + d.hw : ""))
+                : d.label;
+      return '<option value="' + d.index + '">' +
+             esc("[" + d.index + "] " + who + " · " + meta) + '</option>';
+    }).join("");
+    const selDev = r.devices.find(d=>d.preferred);
+    sel.innerHTML = '<option value="auto">自动选择（按能力打分）</option>' + opts;
+    sel.value = selDev ? String(selDev.index) : "auto";
+    const cur = r.current ? (r.current.hint || r.current.name) : "未检测到";
+    note.textContent = "语音输入用；当前：" + cur + (selDev ? "" : "（自动）");
+  }catch(e){
+    sel.innerHTML = '<option value="">读取失败</option>';
+    sel.disabled = true;
+  }
+}
+$("btn-mic-refresh").addEventListener("click", ()=>loadMics());
+$("sel-mic").addEventListener("change", async ()=>{
+  const v = $("sel-mic").value;
+  if (!v) return;
+  try{
+    const r = await api("/api/mic",
+                        v === "auto" ? {auto: true} : {index: Number(v)});
+    toast((r && r.msg) || "已切换");
+    loadMics();
+  }catch(e){ toast("切换失败（看日志）"); }
+});
+
+/* ══ 浏览器当喇叭 ══════════════════════════════════════════════
+   ⚠️ 三个必须守住的点（2026-11-03 真机修复，别退回旧写法）：
+   ① **开启时先锚定当前序号**：`/api/tts/next?since=0` 会把服务端保留的
+      历史播报（开机时的「系统就绪」等）从头放一遍 —— 表现就是
+      "一开声音就一直念系统就绪"。
+   ② **关闭时必须 abort 长轮询 + pause 音频**：`/api/tts/next` 最长阻塞
+      20 秒，只改标志位的话，关了开关还会再冒出一句。
+   ③ **同时只允许一个轮询循环**（ttsLoopId 世代号）：重复点开关会叠加
+      多个循环，同一句被播 N 遍 —— 这是"复读"的真正成因。
+*/
+const audio = new Audio();
+audio.preload = "auto";
+const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+let ttsSince = 0, ttsLoopId = 0, ttsAbort = null, ttsPlaying = null;
+
+/* 停止：作废循环 + 中断长轮询 + 立刻静音（顺序不能反） */
+function ttsStop(){
+  soundOn = false;
+  ttsLoopId++;
+  if (ttsAbort){ try{ ttsAbort.abort(); }catch(e){} ttsAbort = null; }
+  if (ttsPlaying){ try{ ttsPlaying(); }catch(e){} ttsPlaying = null; }
+  try{ audio.pause(); audio.removeAttribute("src"); audio.load(); }catch(e){}
+}
+
+/* 等这一句放完再取下一句，避免两条叠在一起/互相打断 */
+function ttsWaitEnd(){
+  return new Promise(res=>{
+    let done = false;
+    const fin = ()=>{ if (done) return; done = true;
+      audio.onended = null; audio.onerror = null;
+      clearTimeout(t); ttsPlaying = null; res(); };
+    ttsPlaying = fin;
+    const t = setTimeout(fin, 15000);
+    audio.onended = fin;
+    audio.onerror = fin;
+  });
+}
+
+async function ttsLoop(id){
+  while (soundOn && id === ttsLoopId){
+    let s = null;
+    try{
+      ttsAbort = new AbortController();
+      const r = await fetch("/api/tts/next?since=" + ttsSince + "&wait=20",
+                            {signal: ttsAbort.signal, cache: "no-store"});
+      ttsAbort = null;
+      if (!r.ok) throw new Error(r.status);
+      s = await r.json();
+    }catch(e){ ttsAbort = null; }
+    if (!soundOn || id !== ttsLoopId) return;
+    if (s && s.seq && s.url && s.seq > ttsSince){
+      ttsSince = s.seq;
+      try{
+        audio.src = s.url;
+        await audio.play();
+        await ttsWaitEnd();
+      }catch(e){ /* 自动播放限制/解码失败：跳过这句，别把循环打死 */ }
+      if (!soundOn || id !== ttsLoopId) return;
+    }else{
+      await new Promise(r=>setTimeout(r, 200));   // 出错/超时：别打满 CPU
+    }
+  }
+}
+
+async function ttsStart(){
+  /* 浏览器自动播放策略：先用一次用户手势解锁 audio 元素 */
+  try{ audio.src = SILENT_WAV; await audio.play(); }catch(e){}
+  /* 关键：锚定到"现在"，不回放历史播报（旧版从 0 开始 = 复读「系统就绪」） */
+  try{ const r = await api("/api/tts/seq"); ttsSince = Number(r.seq) || 0; }catch(e){}
+  ttsLoop(++ttsLoopId);
+}
+
+$("btn-sound").addEventListener("click", ()=>{
+  if (soundOn){
+    ttsStop();
+    $("btn-sound").classList.remove("on");
+    $("btn-sound").textContent = "开启";
+    toast("声音已关");
+  }else{
+    enableSound();
+  }
+});
+
+/* ══ 远程电源（高级功能）：双重确认 + 服务端二次校验 ═══════════════
+   ⚠️ 只在「高级设置」里出现，主界面永远看不到；确认后才 POST
+   `/api/power`，服务端还会再验一次 action 白名单 + confirm 字段。
+   执行顺序：先 `ctrl.stop()` 停车 → 1.5 s 后 sudo 调 car-power。
+*/
+let powerAction = null;
+function openPower(action){
+  powerAction = action;
+  const reboot = action === "reboot";
+  $("power-title").textContent = reboot ? "重启开发板？" : "关闭开发板？";
+  $("power-tip").textContent = reboot
+    ? "控制台会立刻断开；重启前会先让小车停车，板子大约 30~60 秒后自己起来。"
+    : "控制台会立刻断开；关机前会先让小车停车，之后需要重新上电才能再连。";
+  $("power-confirm").textContent = reboot ? "确认重启" : "确认关机";
+  $("power-confirm").hidden = false;
+  $("power-cancel").textContent = "取消";
+  $("power-mask").hidden = false;
+  $("power-modal").hidden = false;
+}
+function closePower(){
+  $("power-mask").hidden = true;
+  $("power-modal").hidden = true;
+  powerAction = null;
+}
+$("btn-reboot").addEventListener("click", ()=>openPower("reboot"));
+$("btn-shutdown").addEventListener("click", ()=>openPower("shutdown"));
+$("power-cancel").addEventListener("click", closePower);
+$("power-mask").addEventListener("click", closePower);
+$("power-confirm").addEventListener("click", async ()=>{
+  const act = powerAction;
+  closePower();
+  if (!act) return;
+  const label = act === "reboot" ? "重启" : "关机";
+  try{
+    const r = await api("/api/power", {action: act, confirm: "yes"});
+    if (r.ok === false){ toast(r.msg || "操作被拒绝"); return; }
+    toast(r.msg || (label + "命令已提交"));
+    /* 板子马上要断网：留一个不可误解的遮罩，别让用户以为还连着 */
+    $("power-title").textContent = "正在" + label + "…";
+    $("power-tip").textContent = "页面马上会断开。等板子重启/重新上电后，重新打开控制台即可。";
+    $("power-confirm").hidden = true;
+    $("power-cancel").textContent = "我知道了";
+    $("power-mask").hidden = false;
+    $("power-modal").hidden = false;
+    $("power-cancel").onclick = closePower;
+  }catch(e){
+    toast("操作失败（板子可能已断开）");
+  }
+});
+
+/* ══ 日志：**合并相同消息**，灰色为主，只有失败/停止才黄 ═══════ */
+const logRows = [];
+let logN = 0;
+const LOG_WARN = /失败|错误|停止|异常|不可用/;
+const TS_HEAD = /^\[\d\d:\d\d:\d\d\]\s*/;
+
+function renderLog(){
+  const box = $("log");
+  box.innerHTML = "";
+  logRows.forEach(r=>{
+    const d = document.createElement("div");
+    d.className = "lg" + (LOG_WARN.test(r.text) ? " warn" : "");
+    const x = r.n > 1 ? '<span class="x">×' + r.n + "</span>" : "";
+    d.innerHTML = "<span>" + esc(r.text) + "</span>" + x;
+    box.appendChild(d);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+function addLog(raw){
+  const text = String(raw).replace(TS_HEAD, "");
+  if (!text) return;
+  const last = logRows[logRows.length - 1];
+  if (last && last.text === text){ last.n++; }
+  else {
+    logRows.push({ text, n: 1 });
+    if (logRows.length > 300) logRows.shift();
+  }
+  renderLog();
+}
+async function pollLogs(){
+  try{
+    const r = await api("/api/logs?since=" + logN);
+    if (r.lines && r.lines.length){
+      logN = r.since;
+      r.lines.forEach(addLog);
+    }
+  }catch(e){}
+  setTimeout(pollLogs, 1200);
+}
+$("btn-log-clear").addEventListener("click", ()=>{ logRows.length = 0; renderLog(); });
+
+/* ══ 键盘：输入框里打字不控车（否则按 W 会把车开走）═══════════ */
+const KEY = {w:"forward", arrowup:"forward", s:"backward", arrowdown:"backward",
+             a:"turn_left", arrowleft:"turn_left", d:"turn_right", arrowright:"turn_right"};
+const down = new Set();
+addEventListener("keydown", e=>{
+  if (e.key === "F2"){ e.preventDefault(); if (!e.repeat) pttStart(); return; }
+  if (e.key === "Escape"){ openAdv(false); return; }
+  const tag = (e.target && e.target.tagName) || "";
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT"){
+    return;
+  }
+  const k = e.key.toLowerCase();
+  if (k === " "){ e.preventDefault(); doEstop(); return; }
+  const a = KEY[k];
+  if (!a || down.has(k)) return;
+  e.preventDefault(); down.add(k); press(a);
+});
+addEventListener("keyup", e=>{
+  if (e.key === "F2"){ e.preventDefault(); pttStop(); return; }
+  const k = e.key.toLowerCase();
+  if (!KEY[k]) return;
+  down.delete(k);
+  if (down.size === 0) release();
+});
+addEventListener("blur", ()=>{
+  if (down.size){ down.clear(); release(); }
+  if (pttOn) pttStop();
+});
+addEventListener("pagehide", ()=>{ try{ navigator.sendBeacon("/api/stop", "{}"); }catch(e){} });
+addEventListener("visibilitychange", ()=>{ if (document.hidden) release(); });
+
+/* 启动 */
+tick(); pollEvents(); pollLogs();
+/* 支持 `#adv` 直接打开高级设置（远程协助/截图时少点一次） */
+if (location.hash === "#adv") openAdv(true);
+</script>
+</body>
+</html>
